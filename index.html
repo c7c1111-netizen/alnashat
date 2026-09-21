@@ -341,6 +341,18 @@
   .day-chip input{width:18px; height:18px; margin:0; accent-color:#0f3d3e;}
   .day-chip:has(input:checked){background:#0f3d3e; border-color:#0f3d3e; color:#fff;}
   @media print{ #daysField{display:none !important;} }
+
+  /* ===== طباعة الجدول بدون ترويسة/تذييل المتصفح (الرابط والتاريخ) ===== */
+  .pad-row{display:none;}
+  @media print{
+    body.printing-schedule-only{margin:0 !important; padding:0 12mm !important;}
+    body.printing-schedule-only .print-header{margin-top:12mm !important;}
+    body.printing-schedule-only .print-footer{padding-bottom:12mm;}
+    body.printing-schedule-only #scheduleTable .pad-row{display:table-row !important;}
+    body.printing-schedule-only #scheduleTable .pad-row td{
+      border:none !important; background:none !important; padding:0 !important; height:12mm;
+    }
+  }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 </head>
@@ -497,6 +509,9 @@
       <label class="day-chip"><input type="checkbox" data-day="thu"><span>الخميس</span></label>
     </div>
     <div class="sub-note" style="text-align:right;">يبدأ بأيام المرحلة الافتراضية، وتقدر تغيّرها لهذه الخطة.</div>
+    <label style="margin-top:14px;display:block;">الأيام اللي فيها حصتان متتاليتان</label>
+    <div class="day-chips" id="doubleChips"></div>
+    <div class="sub-note" style="text-align:right;">اختر الأيام اللي يكون فيها حصتان من نفس النشاط (مثلًا الاثنين)، وباقي الأيام تكون حصة واحدة.</div>
   </div>
 
   <div class="field" id="scheduleWrap" style="display:none;">
@@ -508,6 +523,7 @@
     <div class="sched-table-wrap">
       <table id="scheduleTable" style="width:100%;border-collapse:collapse;font-size:14px;">
         <thead>
+          <tr class="pad-row"><td colspan="7"></td></tr>
           <tr style="background:#f0f0f0;">
             <th style="border:1px solid #ccc;padding:6px;">الحصة</th>
             <th style="border:1px solid #ccc;padding:6px;">المجال</th>
@@ -519,6 +535,7 @@
           </tr>
         </thead>
         <tbody id="scheduleBody"></tbody>
+        <tfoot><tr class="pad-row"><td colspan="7"></td></tr></tfoot>
       </table>
     </div>
     <div id="scheduleLegend" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;"></div>
@@ -1321,6 +1338,29 @@ const PATTERN_DAYS = {mon:['mon'], monwed:['mon','wed'], montuewed:['mon','tue',
 
 // الأيام المختارة لهذه الخطة (تبدأ من الافتراضي للمرحلة، ويغيّرها المستخدم من شرائح الأيام)
 let activeDays = ['mon','wed'];
+// الأيام اللي يكون فيها حصتان متتاليتان من نفس النشاط (الحصة المرنة)، وباقي الأيام حصة واحدة
+let doubleDays = [];
+const DAY_KEY_BY_NAME = {};
+Object.keys(DAY_KEYS).forEach(k=>{ DAY_KEY_BY_NAME[DAY_KEYS[k]] = k; });
+function capOf(slot){ return doubleDays.includes(DAY_KEY_BY_NAME[slot.day]) ? 2 : 1; }
+
+function renderDoubleChips(){
+  const wrap = document.getElementById('doubleChips');
+  const days = DAY_ORDER.filter(k => activeDays.includes(k));
+  wrap.innerHTML = days.map(k =>
+    `<label class="day-chip"><input type="checkbox" data-dd="${k}" ${doubleDays.includes(k) ? 'checked' : ''}><span>${DAY_NAMES[k]}</span></label>`
+  ).join('');
+  wrap.querySelectorAll('input').forEach(cb=>{
+    cb.addEventListener('change', ()=>{
+      doubleDays = DAY_ORDER.filter(k => {
+        const el = wrap.querySelector(`input[data-dd="${k}"]`);
+        return el ? el.checked : doubleDays.includes(k);
+      });
+      updateSchedule();
+      updatePreview();
+    });
+  });
+}
 
 function defaultDaysForStage(stage){
   return [...PATTERN_DAYS[(stage && settings.patterns[stage]) || 'monwed']];
@@ -1329,6 +1369,7 @@ function renderDayChips(){
   document.querySelectorAll('#dayChips input').forEach(cb=>{
     cb.checked = activeDays.includes(cb.dataset.day);
   });
+  renderDoubleChips();
 }
 function resetDaysToStageDefault(){
   activeDays = defaultDaysForStage(currentStage());
@@ -1339,6 +1380,7 @@ document.querySelectorAll('#dayChips input').forEach(cb=>{
     const picked = DAY_ORDER.filter(k => document.querySelector(`#dayChips input[data-day="${k}"]`).checked);
     if(!picked.length){ cb.checked = true; return; } // لازم يوم واحد على الأقل
     activeDays = picked;
+    renderDoubleChips();
     updateSchedule();
     updatePreview();
   });
@@ -1356,7 +1398,8 @@ function dateListFor(stage){
 //   ويُوزَّع أولًا حتى لا تسبقه الأنشطة العادية على أيامه
 // - أي نشاط آخر يُوزّع بالتتابع على أقرب أيام فاضية
 // ولا يتكرر تاريخ لنشاطين مختلفين
-function allocateSchedule(programs, dateList){
+function allocateSchedule(programs, dateList, capFn){
+  capFn = capFn || (()=>1); // سعة اليوم: عدد الحصص اللي يستوعبها (1 أو 2)
   const used = new Set();
   let cursor = 0;
   const results = new Array(programs.length);
@@ -1366,28 +1409,39 @@ function allocateSchedule(programs, dateList){
   order.forEach(idx=>{
     const prog = programs[idx];
     const match = (prog.sessions || '').match(/\d+/);
-    if(!match){ results[idx] = {prog, slots:[], noCount:true}; return; }
-    const needed = parseInt(match[0], 10);
-    let slots = [];
+    if(!match){ results[idx] = {prog, slots:[], counts:[], total:0, noCount:true}; return; }
+    const total = parseInt(match[0], 10);
+    const slots = [];
+    const counts = [];
+    let filled = 0;
+    const take = (s)=>{
+      const cnt = Math.min(capFn(s), total - filled);
+      slots.push(s); counts.push(cnt); filled += cnt; used.add(s.date + s.day);
+    };
 
     if(prog.anchorDate){
       const t = new Date(prog.anchorDate).getTime();
       const free = dateList
         .filter(s => !used.has(s.date + s.day))
         .sort((a,b)=> Math.abs(new Date(a.date) - t) - Math.abs(new Date(b.date) - t) || a.date.localeCompare(b.date));
-      slots = free.slice(0, needed).sort((a,b)=> a.date.localeCompare(b.date));
-      slots.forEach(s=>used.add(s.date + s.day));
+      const picked = [];
+      let cap = 0;
+      for(const s of free){
+        if(cap >= total) break;
+        picked.push(s); cap += capFn(s);
+      }
+      picked.sort((a,b)=> a.date.localeCompare(b.date));
+      picked.forEach(take);
     } else {
       let i = cursor;
-      while(slots.length < needed && i < dateList.length){
+      while(filled < total && i < dateList.length){
         const s = dateList[i];
-        const key = s.date + s.day;
-        if(!used.has(key)){ slots.push(s); used.add(key); }
+        if(!used.has(s.date + s.day)) take(s);
         i++;
       }
       cursor = i;
     }
-    results[idx] = {prog, slots, shortage: slots.length < needed};
+    results[idx] = {prog, slots, counts, total, shortage: filled < total};
   });
 
   return {results, usedCount: used.size, totalCount: dateList.length};
@@ -1440,27 +1494,31 @@ function updateSchedule(){
     ? `جدول توزيع حصص نشاط «${namesLabel}» تلقائيًا (${dayLabel})`
     : `جدول توزيع حصص الأنشطة (${namesLabel}) تلقائيًا (${dayLabel})`;
 
-  const {results: allocations, usedCount, totalCount} = allocateSchedule(selectedPrograms, dateList);
+  const {results: allocations, usedCount, totalCount} = allocateSchedule(selectedPrograms, dateList, capOf);
   let shortage = false;
   let noSessionCount = false;
 
   const flatRows = [];
-  allocations.forEach(({prog, slots, shortage:sh, noCount})=>{
+  allocations.forEach(({prog, slots, counts, shortage:sh, noCount})=>{
     if(sh) shortage = true;
     if(noCount) noSessionCount = true;
-    slots.forEach(s=> flatRows.push({prog, s}));
+    // cnt = عدد الحصص في هذا اليوم (الأخيرة قد تكون حصة واحدة لو العدد فردي)
+    slots.forEach((s,i)=> flatRows.push({prog, s, cnt: counts[i]}));
   });
 
   // ترتيب الجدول حسب التسلسل الزمني الفعلي بغض النظر عن ترتيب اختيار الأنشطة
   flatRows.sort((a,b)=> a.s.date.localeCompare(b.s.date));
 
   let rowsHtml = '';
-  flatRows.forEach(({prog, s}, idx)=>{
+  let cum = 0;
+  flatRows.forEach(({prog, s, cnt})=>{
+    const sessLabel = cnt > 1 ? `${cum+1}–${cum+cnt}` : `${cum+1}`;
+    cum += cnt;
     const domCls = DOMAIN_CLASS[prog.domain] || '';
     const td = 'border:1px solid #ccc;padding:6px;text-align:center;';
     rowsHtml += `
         <tr class="${domCls}">
-          <td style="${td}">${idx + 1}</td>
+          <td style="${td}"><span dir="ltr" style="unicode-bidi:isolate;">${sessLabel}</span></td>
           <td style="${td}">${prog.domain || ''}</td>
           <td style="${td}">${prog.name}</td>
           <td style="${td}">${s.week}</td>
@@ -1519,10 +1577,10 @@ function updatePreview(){
 
   let scheduleText = '';
   if(selectedPrograms.length && stage){
-    const {results: allocations} = allocateSchedule(selectedPrograms, dateListFor(stage).list);
+    const {results: allocations} = allocateSchedule(selectedPrograms, dateListFor(stage).list, capOf);
     scheduleText = allocations
       .filter(a => a.slots.length)
-      .map(a => `${a.prog.name}: ` + a.slots.map(s => `${s.day} ${fmtDate(s.date)} (${fmtHijri(s.h)})`).join('، '))
+      .map(a => `${a.prog.name}: ` + a.slots.map((s,i) => `${s.day} ${fmtDate(s.date)} (${fmtHijri(s.h)})${a.counts[i] > 1 ? ' — حصتان' : ''}`).join('، '))
       .join(' | ');
   }
   set('pvSchedule', scheduleText);
@@ -1548,6 +1606,13 @@ function preparePrint(){
   const dateStr = new Date().toLocaleDateString('ar-SA', {year:'numeric', month:'long', day:'numeric'});
   document.getElementById('printFooterDate').textContent = `تاريخ الإنشاء: ${dateStr}`;
   document.body.classList.add('printing-schedule-only');
+  // هوامش الصفحة صفر: المتصفح يرسم الرابط والتاريخ داخل الهامش، فلا يبقى له مكان
+  if(!document.getElementById('printPageStyle')){
+    const st = document.createElement('style');
+    st.id = 'printPageStyle';
+    st.textContent = '@page{margin:0}';
+    document.head.appendChild(st);
+  }
 }
 function printScheduleOnly(){
   if(!hasSchedule()){
@@ -1601,11 +1666,14 @@ document.getElementById('downloadScheduleImageBtn').addEventListener('click', ()
 });
 window.addEventListener('afterprint', ()=>{
   document.body.classList.remove('printing-schedule-only');
+  const ps = document.getElementById('printPageStyle');
+  if(ps) ps.remove();
 });
 
 document.getElementById('resetBtn').addEventListener('click', ()=>{
   ['actName','goal','date','time','place','tools','steps','notes'].forEach(id=>document.getElementById(id).value='');
   gradeEl.value = '';
+  doubleDays = [];
   resetDaysToStageDefault();
   teacherEl.value = '';
   selectedDomains = [];
@@ -1627,6 +1695,7 @@ function collectPlanFromForm(){
     savedAt: new Date().toISOString(),
     grade: gradeEl.value,
     days: [...activeDays],
+    doubleDays: [...doubleDays],
     teacher: teacherEl.value.trim(),
     selectedDomains: [...selectedDomains],
     selectedPrograms: selectedPrograms.map(p=>({
@@ -1649,6 +1718,9 @@ function applyPlanToForm(plan){
   updateGradeInfo();
   const savedDays = Array.isArray(plan.days) ? plan.days.filter(k => DAY_ORDER.includes(k)) : [];
   if(savedDays.length){ activeDays = savedDays; renderDayChips(); } else { resetDaysToStageDefault(); }
+  // التوافق مع الخطط القديمة (كانت خيارًا واحدًا لكل الأيام)
+  doubleDays = Array.isArray(plan.doubleDays) ? plan.doubleDays.filter(k => DAY_ORDER.includes(k)) : (plan.double ? [...activeDays] : []);
+  renderDoubleChips();
 
   teacherEl.value = plan.teacher || '';
 
