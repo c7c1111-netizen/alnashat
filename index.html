@@ -608,7 +608,7 @@
     <div class="pv-row"><div class="k">ملاحظات</div><div class="v" id="pvNotes">—</div></div>
 
     <div class="actions">
-      <button class="btn btn-primary" onclick="window.print()">طباعة / حفظ PDF</button>
+      <button class="btn btn-primary" id="printBtn">🖨️ طباعة الجدول / حفظ PDF</button>
       <button class="btn btn-secondary" id="resetBtn">تفريغ الخطة</button>
     </div>
 
@@ -1538,12 +1538,29 @@ function updatePreview(){
 }
 
 // ===== تنزيل الجدول (PDF عبر الطباعة / صورة) =====
-document.getElementById('downloadScheduleBtn').addEventListener('click', ()=>{
+// ===== الطباعة: الجدول فقط =====
+function hasSchedule(){
+  return document.getElementById('scheduleWrap').style.display !== 'none'
+      && document.getElementById('scheduleBody').children.length > 0;
+}
+function preparePrint(){
+  if(!hasSchedule()) return; // لا يوجد جدول: تُطبع الصفحة كما هي
   const dateStr = new Date().toLocaleDateString('ar-SA', {year:'numeric', month:'long', day:'numeric'});
   document.getElementById('printFooterDate').textContent = `تاريخ الإنشاء: ${dateStr}`;
   document.body.classList.add('printing-schedule-only');
+}
+function printScheduleOnly(){
+  if(!hasSchedule()){
+    alert('اختر الصف والأنشطة أولًا حتى يظهر جدول التوزيع ويُطبع.');
+    return;
+  }
+  preparePrint();
   window.print();
-});
+}
+// يشمل الطباعة من زرّ المتصفح أو قائمة المشاركة أيضًا
+window.addEventListener('beforeprint', preparePrint);
+document.getElementById('printBtn').addEventListener('click', printScheduleOnly);
+document.getElementById('downloadScheduleBtn').addEventListener('click', printScheduleOnly);
 
 document.getElementById('downloadScheduleImageBtn').addEventListener('click', ()=>{
   if(typeof html2canvas === 'undefined'){
